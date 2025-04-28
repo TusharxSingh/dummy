@@ -23,6 +23,9 @@ class Course(models.Model):
     code = models.CharField(max_length=20)
     semester = models.IntegerField()
     department = models.CharField(max_length=100)
+    number_of_lectures = models.PositiveIntegerField(default=0)
+    number_of_labs = models.PositiveIntegerField(default=0)
+    credits = models.PositiveIntegerField(default=0)
     teacher = models.ForeignKey(Teacher, null=True, on_delete=models.CASCADE)
 
     def __str__(self):

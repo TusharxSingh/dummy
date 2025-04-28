@@ -2,13 +2,16 @@ import random
 from collections import defaultdict
 from datetime import datetime, time, timedelta
 
+# GA Hyperparameters
 POPULATION_SIZE = 50
 GENERATIONS = 100
 MUTATION_RATE = 0.1
 
+# Constants
 LUNCH_START = time(13, 0)
 LUNCH_END = time(13, 50)
 
+# --- MAIN FUNCTION ---
 def generate_timetable(teachers, courses, rooms, timeslots, constraints):
     max_hours = constraints.get("max_hours_per_day", 5)
 
@@ -22,13 +25,12 @@ def generate_timetable(teachers, courses, rooms, timeslots, constraints):
         if (LUNCH_START <= start < LUNCH_END) or (LUNCH_START < end <= LUNCH_END):
             continue
 
-        if duration >= 95:
-            valid_timeslot_map["Lab"].append(idx)
-        elif duration <= 55:
+        if 45 <= duration <= 55:
             valid_timeslot_map["Theatre"].append(idx)
+            valid_timeslot_map["Lab"].append(idx)  # labs use two slots together
 
     population = [
-        create_random_timetable(courses, rooms, valid_timeslot_map, timeslots)
+        create_random_timetable(courses, rooms, teachers, valid_timeslot_map, timeslots)
         for _ in range(POPULATION_SIZE)
     ]
 
@@ -43,29 +45,103 @@ def generate_timetable(teachers, courses, rooms, timeslots, constraints):
             p1 = select(population, fitness_scores)
             p2 = select(population, fitness_scores)
             child = crossover(p1, p2)
-            mutate(child, courses, rooms, valid_timeslot_map, timeslots)
+            mutate(child, courses, rooms, teachers, valid_timeslot_map, timeslots)
             next_gen.append(child)
 
         population = next_gen
 
     best = max(population, key=lambda ind: fitness(ind, courses, teachers, rooms, timeslots, max_hours, valid_timeslot_map))
-    return format_result(best, courses, teachers, rooms, timeslots)
+    return format_result_for_display(best, courses, teachers, rooms, timeslots)
 
-def create_random_timetable(courses, rooms, valid_timeslot_map, timeslots):
+# --- TIMETABLE CREATION ---
+def create_random_timetable(courses, rooms, teachers, valid_timeslot_map, timeslots):
     timetable = {}
+    room_type_map = {room["id"]: room["type"] for room in rooms}
+
+    teacher_day_lecture = defaultdict(lambda: defaultdict(bool))
+    teacher_day_lab_subjects = defaultdict(lambda: defaultdict(set))
+    used_timeslots = set()
+
+    # --- FIRST: Assign Labs ---
     for course in courses:
-        assigned_room = random.choice(rooms)
-        valid_ts = valid_timeslot_map.get(assigned_room["type"], []) or list(range(len(timeslots)))
-        selected_ts = random.choice(valid_ts)
-        selected_timeslot = timeslots[selected_ts]
-        timetable[course["id"]] = {
-            "room_id": assigned_room["id"],
-            "timeslot_id": selected_ts,
-            "timeslot_day": selected_timeslot["day"],
-            "timeslot_slot": selected_timeslot["slot"],
-        }
+        num_labs = course["number_of_labs"]
+        teacher_id = course["teacher_id"]
+
+        for _ in range(num_labs):
+            preferred_rooms = [r for r in rooms if r["type"] == "Lab"]
+            if not preferred_rooms or len(valid_timeslot_map["Lab"]) < 2:
+                continue
+
+            attempts = 0
+            while attempts < 50:
+                idx = random.randint(0, len(valid_timeslot_map["Lab"]) - 2)
+                ts1 = valid_timeslot_map["Lab"][idx]
+                ts2 = valid_timeslot_map["Lab"][idx + 1]
+
+                day1 = timeslots[ts1]["day"]
+                day2 = timeslots[ts2]["day"]
+
+                if day1 == day2 and ts2 == ts1 + 1:
+                    if (ts1 in used_timeslots) or (ts2 in used_timeslots):
+                        attempts += 1
+                        continue
+
+                    if course["id"] in teacher_day_lab_subjects[teacher_id][day1]:
+                        attempts += 1
+                        continue
+
+                    timetable.setdefault(course["id"], {"lectures": [], "labs": []})
+
+                    # Combine the slots for a single lab entry
+                    slot1_start, _ = timeslots[ts1]["slot"].split(" - ")
+                    _, slot2_end = timeslots[ts2]["slot"].split(" - ")
+                    combined_slot = f"{slot1_start.strip()} - {slot2_end.strip()}"
+
+                    timetable[course["id"]]["labs"].append({
+                        "room_id": preferred_rooms[0]["id"],
+                        "timeslot_ids": [ts1, ts2],
+                        "timeslot_day": day1,
+                        "combined_slot": combined_slot,
+                    })
+
+                    used_timeslots.add(ts1)
+                    used_timeslots.add(ts2)
+                    teacher_day_lab_subjects[teacher_id][day1].add(course["id"])
+                    break
+                attempts += 1
+
+    # --- THEN: Assign Lectures ---
+    for course in courses:
+        num_lectures = course["number_of_lectures"]
+        teacher_id = course["teacher_id"]
+
+        for _ in range(num_lectures):
+            preferred_rooms = [r for r in rooms if r["type"] == "Theatre"]
+            if not preferred_rooms or not valid_timeslot_map["Theatre"]:
+                continue
+
+            attempts = 0
+            while attempts < 50:
+                selected_ts = random.choice(valid_timeslot_map["Theatre"])
+                ts = timeslots[selected_ts]
+                day = ts["day"]
+
+                if (selected_ts not in used_timeslots) and not teacher_day_lecture[teacher_id][day]:
+                    timetable.setdefault(course["id"], {"lectures": [], "labs": []})
+                    timetable[course["id"]]["lectures"].append({
+                        "room_id": preferred_rooms[0]["id"],
+                        "timeslot_id": selected_ts,
+                        "timeslot_day": ts["day"],
+                        "timeslot_slot": ts["slot"],
+                    })
+                    used_timeslots.add(selected_ts)
+                    teacher_day_lecture[teacher_id][day] = True
+                    break
+                attempts += 1
+
     return timetable
 
+# --- FITNESS FUNCTION ---
 def fitness(timetable, courses, teachers, rooms, timeslots, max_hours, valid_timeslot_map):
     score = 1000
     teacher_day_hours = defaultdict(lambda: defaultdict(int))
@@ -73,36 +149,78 @@ def fitness(timetable, courses, teachers, rooms, timeslots, max_hours, valid_tim
     room_usage = defaultdict(set)
     room_map = {room["id"]: room for room in rooms}
 
+    teacher_day_lecture = defaultdict(lambda: defaultdict(bool))
+    teacher_day_lab_subjects = defaultdict(lambda: defaultdict(set))
+
     for course in courses:
-        entry = timetable.get(course["id"])
+        course_entry = timetable.get(course["id"])
         teacher_id = course.get("teacher_id")
 
-        if not entry or teacher_id is None:
+        if not course_entry or teacher_id is None:
             score -= 50
             continue
 
-        timeslot = timeslots[entry["timeslot_id"]]
-        room = room_map[entry["room_id"]]
-        day = timeslot["day"]
-        time_range = timeslot["slot"]
-        slot_key = f"{day}-{time_range}"
+        for lecture in course_entry.get("lectures", []):
+            timeslot = timeslots[lecture["timeslot_id"]]
+            room = room_map[lecture["room_id"]]
+            day = timeslot["day"]
+            time_range = timeslot["slot"]
+            slot_key = f"{day}-{time_range}"
 
-        if slot_key in room_usage[room["id"]]:
-            score -= 20
-        else:
+            if slot_key in room_usage[room["id"]]:
+                score -= 20
             room_usage[room["id"]].add(slot_key)
 
-        if entry["timeslot_id"] not in valid_timeslot_map.get(room["type"], []):
-            score -= 25
+            if lecture["timeslot_id"] not in valid_timeslot_map.get(room["type"], []):
+                score -= 25
 
-        teacher_day_hours[teacher_id][day] += 1
-        if teacher_day_hours[teacher_id][day] > max_hours:
-            score -= 10
+            teacher_day_hours[teacher_id][day] += 1
+            if teacher_day_hours[teacher_id][day] > max_hours:
+                score -= 10
 
-        start_str, end_str = time_range.split(" - ")
-        start = datetime.strptime(start_str.strip(), "%H:%M").time()
-        end = datetime.strptime(end_str.strip(), "%H:%M").time()
-        teacher_schedule[teacher_id][day].append((start, end))
+            if teacher_day_lecture[teacher_id][day]:
+                score -= 100
+            else:
+                teacher_day_lecture[teacher_id][day] = True
+
+            start_str, end_str = time_range.split(" - ")
+            start = datetime.strptime(start_str.strip(), "%H:%M").time()
+            end = datetime.strptime(end_str.strip(), "%H:%M").time()
+            teacher_schedule[teacher_id][day].append((start, end))
+
+        for lab in course_entry.get("labs", []):
+            ts1, ts2 = lab["timeslot_ids"]
+            room = room_map[lab["room_id"]]
+            day = lab["timeslot_day"]
+            slot1 = timeslots[ts1]["slot"]
+            slot2 = timeslots[ts2]["slot"]
+
+            slot_key1 = f"{day}-{slot1}"
+            slot_key2 = f"{day}-{slot2}"
+
+            if slot_key1 in room_usage[room["id"]] or slot_key2 in room_usage[room["id"]]:
+                score -= 20
+            room_usage[room["id"]].add(slot_key1)
+            room_usage[room["id"]].add(slot_key2)
+
+            if ts1 not in valid_timeslot_map.get(room["type"], []) or ts2 not in valid_timeslot_map.get(room["type"], []):
+                score -= 25
+
+            teacher_day_hours[teacher_id][day] += 2
+            if teacher_day_hours[teacher_id][day] > max_hours:
+                score -= 10
+
+            if course["id"] in teacher_day_lab_subjects[teacher_id][day]:
+                score -= 80
+            else:
+                teacher_day_lab_subjects[teacher_id][day].add(course["id"])
+
+            # Add lab time to teacher schedule
+            start1, _ = slot1.split(" - ")
+            _, end2 = slot2.split(" - ")
+            start = datetime.strptime(start1.strip(), "%H:%M").time()
+            end = datetime.strptime(end2.strip(), "%H:%M").time()
+            teacher_schedule[teacher_id][day].append((start, end))
 
     for schedule in teacher_schedule.values():
         for times in schedule.values():
@@ -115,6 +233,7 @@ def fitness(timetable, courses, teachers, rooms, timeslots, max_hours, valid_tim
 
     return score
 
+# --- GA UTILITIES ---
 def select(population, scores):
     total = sum(scores)
     if total <= 0:
@@ -124,33 +243,86 @@ def select(population, scores):
 def crossover(p1, p2):
     return {k: random.choice([p1.get(k), p2.get(k)]) for k in p1.keys()}
 
-def mutate(timetable, courses, rooms, valid_timeslot_map, timeslots):
+def mutate(timetable, courses, rooms, teachers, valid_timeslot_map, timeslots):
     room_map = {room["id"]: room for room in rooms}
+
     for course in courses:
         cid = course["id"]
-        if cid not in timetable or random.random() >= MUTATION_RATE:
+        if cid not in timetable or random.random() > MUTATION_RATE:
             continue
-        room = room_map[timetable[cid]["room_id"]]
-        valid_ts = valid_timeslot_map.get(room["type"], []) or list(range(len(timeslots)))
-        timetable[cid]["timeslot_id"] = random.choice(valid_ts)
 
-def format_result(timetable, courses, teachers, rooms, timeslots):
+        entry = timetable[cid]
+
+        for lecture in entry.get("lectures", []):
+            room = room_map[lecture["room_id"]]
+            valid_ts = valid_timeslot_map.get(room["type"], []) or list(range(len(timeslots)))
+            lecture["timeslot_id"] = random.choice(valid_ts)
+
+# --- FORMAT FINAL OUTPUT ---
+def format_result_for_display(timetable, courses, teachers, rooms, timeslots):
+    """
+    Formats the timetable into a tabular structure for display, suitable for frontend rendering.
+    
+    Arguments:
+    timetable -- The generated timetable (as a dictionary)
+    courses -- List of courses
+    teachers -- List of teachers
+    rooms -- List of rooms
+    timeslots -- List of available timeslots
+    
+    Returns:
+    formatted_result -- A list of rows that can be displayed in a table format
+    """
     teacher_map = {t["id"]: f"{t['first_name']} {t['last_name']}" for t in teachers}
     room_map = {r["id"]: r["name"] for r in rooms}
-    result = []
+    timeslot_map = {ts["id"]: ts["slot"] for ts in timeslots}
 
+    formatted_result = []
+
+    # Loop through all courses to format their lectures and labs
     for course in courses:
         cid = course["id"]
-        entry = timetable.get(cid)
-        if not entry:
-            continue
-        slot = timeslots[entry["timeslot_id"]]
-        result.append({
-            "subject": course["name"],
-            "teacher": teacher_map.get(course.get("teacher_id"), "Unknown"),
-            "day": slot["day"],
-            "time": slot["slot"],
-            "room": room_map.get(entry["room_id"], "Unknown"),
-        })
+        subject_name = course["name"]
 
-    return result
+        # Add lectures to the timetable
+        if cid in timetable:
+            for lecture in timetable[cid]["lectures"]:
+                timeslot = timeslots[lecture["timeslot_id"]]
+                formatted_result.append({
+                    "subject": subject_name,
+                    "type": "Lecture",
+                    "room": room_map[lecture["room_id"]],
+                    "day": timeslot["day"],
+                    "time": timeslot["slot"],
+                    "teacher": teacher_map[course["teacher_id"]],
+                })
+
+            # Process labs
+            for lab in timetable[cid]["labs"]:
+                formatted_result.append({
+                    "subject": subject_name,
+                    "type": "Lab",
+                    "room": room_map[lab["room_id"]],
+                    "day": lab["timeslot_day"],
+                    "time": lab["combined_slot"],
+                    "teacher": teacher_map[course["teacher_id"]],
+                })
+
+    return formatted_result
+
+# --- DISPLAY THE TIMETABLE ---
+def print_timetable_as_table(formatted_result):
+    """
+    Prints the timetable in a tabular format similar to the example shown above.
+    
+    Arguments:
+    formatted_result -- List of formatted timetable data (each row being a dictionary)
+    """
+    print("+------------+---------+---------+-------+---------------+-------------------+")
+    print("| Subject    | Type    | Room    | Day   | Time          | Teacher            |")
+    print("+------------+---------+---------+-------+---------------+-------------------+")
+    
+    for entry in formatted_result:
+        print(f"| {entry['subject']:<10} | {entry['type']:<7} | {entry['room']:<7} | {entry['day']:<5} | {entry['time']:<13} | {entry['teacher']:<17} |")
+    
+    print("+------------+---------+---------+-------+---------------+-------------------+")

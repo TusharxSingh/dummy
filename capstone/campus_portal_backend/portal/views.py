@@ -23,7 +23,7 @@ def generate_timetable(request):
         max_hours = request.data.get("max_hours_per_day", 5)
 
         teachers = list(Teacher.objects.values("id", "first_name", "last_name"))
-        courses = list(Course.objects.values("id", "name", "teacher_id"))
+        courses = list(Course.objects.values("id", "name", "teacher_id","number_of_lectures", "number_of_labs"))
         rooms = list(Room.objects.values("id", "name", "type"))
 
         timeslots = [
