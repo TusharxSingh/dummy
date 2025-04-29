@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import CustomUser, Teacher, Course, Room, Day, TimeSlot
+from .models import CustomUser, Teacher, Course, Room, Day, TimeSlot, TimetableEntry
 
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
@@ -38,4 +38,9 @@ class TimeSlotSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = TimeSlot
+        fields = '__all__'
+
+class TimetableEntrySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = TimetableEntry
         fields = '__all__'

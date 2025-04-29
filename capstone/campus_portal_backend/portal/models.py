@@ -70,3 +70,14 @@ class TimeSlot(models.Model):
     def clean(self):
         if self.end_time <= self.start_time:
             raise ValidationError("End time must be after start time.")
+
+class TimetableEntry(models.Model):
+    subject = models.CharField(max_length=255)
+    type = models.CharField(max_length=20)  # 'Lecture' or 'Lab'
+    room = models.CharField(max_length=255)
+    day = models.CharField(max_length=20)
+    time = models.CharField(max_length=50)
+    teacher = models.ForeignKey(Teacher, null=True, on_delete=models.SET_NULL, db_column='teacher_id')
+
+    def __str__(self):
+        return f"{self.subject} - {self.day} {self.time}"

@@ -8,7 +8,10 @@ from .views import (
     TeacherViewSet,
     CourseViewSet,
     RoomViewSet,
-    TimeSlotViewSet
+    TimeSlotViewSet,
+    save_timetable,
+    get_timetable,
+    delete_timetable
 )
 
 router = DefaultRouter()
@@ -23,4 +26,7 @@ urlpatterns = [
     path('user-info/', user_info, name='user_info'),
     path('generate-timetable/', generate_timetable, name='generate_timetable'),
     path('', include(router.urls)),
+    path('timetable/save/', save_timetable, name='save_timetable'),
+    path('timetable/', get_timetable, name='get_timetable'),
+    path('timetable/delete/', delete_timetable, name='delete_timetable'),
 ]

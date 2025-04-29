@@ -1,6 +1,7 @@
 import random
 from collections import defaultdict
 from datetime import datetime, time, timedelta
+import requests
 
 # GA Hyperparameters
 POPULATION_SIZE = 50
@@ -27,7 +28,7 @@ def generate_timetable(teachers, courses, rooms, timeslots, constraints):
 
         if 45 <= duration <= 55:
             valid_timeslot_map["Theatre"].append(idx)
-            valid_timeslot_map["Lab"].append(idx)  # labs use two slots together
+            valid_timeslot_map["Lab"].append(idx)
 
     population = [
         create_random_timetable(courses, rooms, teachers, valid_timeslot_map, timeslots)
@@ -51,7 +52,9 @@ def generate_timetable(teachers, courses, rooms, timeslots, constraints):
         population = next_gen
 
     best = max(population, key=lambda ind: fitness(ind, courses, teachers, rooms, timeslots, max_hours, valid_timeslot_map))
-    return format_result_for_display(best, courses, teachers, rooms, timeslots)
+    formatted_result = format_result_for_display(best, courses, teachers, rooms, timeslots)
+    post_timetable_to_django_api(formatted_result)
+    return formatted_result
 
 # --- TIMETABLE CREATION ---
 def create_random_timetable(courses, rooms, teachers, valid_timeslot_map, timeslots):
@@ -62,7 +65,6 @@ def create_random_timetable(courses, rooms, teachers, valid_timeslot_map, timesl
     teacher_day_lab_subjects = defaultdict(lambda: defaultdict(set))
     used_timeslots = set()
 
-    # --- FIRST: Assign Labs ---
     for course in courses:
         num_labs = course["number_of_labs"]
         teacher_id = course["teacher_id"]
@@ -92,7 +94,6 @@ def create_random_timetable(courses, rooms, teachers, valid_timeslot_map, timesl
 
                     timetable.setdefault(course["id"], {"lectures": [], "labs": []})
 
-                    # Combine the slots for a single lab entry
                     slot1_start, _ = timeslots[ts1]["slot"].split(" - ")
                     _, slot2_end = timeslots[ts2]["slot"].split(" - ")
                     combined_slot = f"{slot1_start.strip()} - {slot2_end.strip()}"
@@ -110,7 +111,6 @@ def create_random_timetable(courses, rooms, teachers, valid_timeslot_map, timesl
                     break
                 attempts += 1
 
-    # --- THEN: Assign Lectures ---
     for course in courses:
         num_lectures = course["number_of_lectures"]
         teacher_id = course["teacher_id"]
@@ -145,7 +145,6 @@ def create_random_timetable(courses, rooms, teachers, valid_timeslot_map, timesl
                 attempts += 1
 
             if not assigned:
-                # Try another free day
                 for ts_idx in valid_timeslot_map["Theatre"]:
                     ts = timeslots[ts_idx]
                     day = ts["day"]
@@ -163,7 +162,6 @@ def create_random_timetable(courses, rooms, teachers, valid_timeslot_map, timesl
                         break
 
             if not assigned:
-                # Last fallback: assign anywhere even if teacher has a lecture that day
                 for ts_idx in valid_timeslot_map["Theatre"]:
                     ts = timeslots[ts_idx]
                     if ts_idx not in used_timeslots:
@@ -185,7 +183,6 @@ def fitness(timetable, courses, teachers, rooms, timeslots, max_hours, valid_tim
     teacher_schedule = defaultdict(lambda: defaultdict(list))
     room_usage = defaultdict(set)
     room_map = {room["id"]: room for room in rooms}
-
     teacher_day_lecture = defaultdict(lambda: defaultdict(bool))
     teacher_day_lab_subjects = defaultdict(lambda: defaultdict(set))
 
@@ -296,7 +293,6 @@ def mutate(timetable, courses, rooms, teachers, valid_timeslot_map, timeslots):
 
 # --- FORMAT FINAL OUTPUT ---
 def format_result_for_display(timetable, courses, teachers, rooms, timeslots):
-    teacher_map = {t["id"]: f"{t['first_name']} {t['last_name']}" for t in teachers}
     room_map = {r["id"]: r["name"] for r in rooms}
     timeslot_map = {ts["id"]: ts["slot"] for ts in timeslots}
 
@@ -312,29 +308,27 @@ def format_result_for_display(timetable, courses, teachers, rooms, timeslots):
                 formatted_result.append({
                     "subject": subject_name,
                     "type": "Lecture",
-                    "room": room_map[lecture["room_id"]],
+                    "room": room_map.get(lecture["room_id"], f"Room {lecture['room_id']}"),  # Use name
                     "day": timeslot["day"],
                     "time": timeslot["slot"],
-                    "teacher": teacher_map[course["teacher_id"]],
+                    "teacher": course["teacher_id"],
                 })
 
             for lab in timetable[cid]["labs"]:
                 formatted_result.append({
                     "subject": subject_name,
                     "type": "Lab",
-                    "room": room_map[lab["room_id"]],
+                    "room": room_map.get(lab["room_id"], f"Room {lab['room_id']}"),  # Use name
                     "day": lab["timeslot_day"],
                     "time": lab["combined_slot"],
-                    "teacher": teacher_map[course["teacher_id"]],
+                    "teacher": course["teacher_id"],
                 })
 
     return formatted_result
 
-# --- DISPLAY THE TIMETABLE ---
-def print_timetable_as_table(formatted_result):
-    print("+------------+---------+---------+-------+---------------+-------------------+")
-    print("| Subject    | Type    | Room    | Day   | Time          | Teacher            |")
-    print("+------------+---------+---------+-------+---------------+-------------------+")
-    for entry in formatted_result:
-        print(f"| {entry['subject']:<10} | {entry['type']:<7} | {entry['room']:<7} | {entry['day']:<5} | {entry['time']:<13} | {entry['teacher']:<17} |")
-    print("+------------+---------+---------+-------+---------------+-------------------+")
+
+# --- POST TO DJANGO ---
+def post_timetable_to_django_api(formatted_result):
+    url = "http://localhost:8000/api/timetable/save/"
+    response = requests.post(url, json=formatted_result)
+    print("✅ Response:", response.json())

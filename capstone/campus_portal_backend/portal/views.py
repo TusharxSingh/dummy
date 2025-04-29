@@ -3,8 +3,8 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework import viewsets
 
-from .models import Teacher, Course, Room, TimeSlot
-from .serializers import TeacherSerializer, CourseSerializer, RoomSerializer, TimeSlotSerializer
+from .models import Teacher, Course, Room, TimeSlot, TimetableEntry
+from .serializers import TeacherSerializer, CourseSerializer, RoomSerializer, TimeSlotSerializer, TimetableEntrySerializer
 
 from portal.services.genetic_algorithm import generate_timetable as ga_generate_timetable
 
@@ -63,3 +63,42 @@ class TimeSlotViewSet(viewsets.ModelViewSet):
     queryset = TimeSlot.objects.all()
     serializer_class = TimeSlotSerializer
     permission_classes = [IsAuthenticated]
+
+@api_view(["POST"])
+def save_timetable(request):
+    """
+    Delete old timetable and save new one.
+    Expected: JSON list of entries [{subject, type, room, day, time, teacher}]
+    """
+    TimetableEntry.objects.all().delete()
+    serializer = TimetableEntrySerializer(data=request.data, many=True)
+    if serializer.is_valid():
+        serializer.save()
+        return Response({"message": "Timetable saved successfully."})
+    else:
+        print("Serializer errors:", serializer.errors)
+        return Response(serializer.errors, status=400)
+
+@api_view(["GET"])
+def get_timetable(request):
+    teacher_id = request.query_params.get('teacher_id', None)
+
+    if not teacher_id:
+        return Response({"error": "Teacher id is required."}, status=400)
+
+    # Filter timetable entries by teacher's name
+    timetable = TimetableEntry.objects.filter(teacher=teacher_id)
+    
+    if not timetable.exists():
+        return Response({"error": "No timetable entries found for this teacher."}, status=404)
+    print("Timetable Entries:", timetable)
+    
+    serializer = TimetableEntrySerializer(timetable, many=True)
+    return Response(serializer.data)
+
+
+
+@api_view(["DELETE"])
+def delete_timetable(request):
+    TimetableEntry.objects.all().delete()
+    return Response({"message": "Timetable deleted successfully."})
